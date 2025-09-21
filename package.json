@@ -1,0 +1,25 @@
+{
+  "name": "discord-clan-bot",
+  "version": "1.0.0",
+  "description": "Discord clan management bot with MongoDB (add/remove/list/warn/ban/promote/demote)",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon --watch . index.js",
+    "register": "cross-env REGISTER_COMMANDS=true node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "mongoose": "^8.8.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.4"
+  }
+}
