@@ -526,9 +526,3 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptim
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => console.log(`Health server listening on ${PORT}`))
 
-
-อัปเดตให้แล้ว! ผมวางไฟล์ใหม่ชื่อ index.express.js ในแคนวาส (รวมโค้ดเต็ม + Express health server + ปรับ log แยก add/remove และ IDs แบบคงที่) ✅
-
-ให้คุณทำตามนี้:
-
-1. แทนที่ไฟล์เก่า index.js ด้วยไ
