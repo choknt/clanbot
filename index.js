@@ -14,18 +14,25 @@ import {
 import mongoose, { Schema } from 'mongoose'
 
 /* =========================
- * Helpers & Config (IDs แบบคงที่ตามที่ผู้ใช้ระบุ)
+ * Config (IDs แบบคงที่)
  * ========================= */
 const cfg = {
   ACTION_ROLE_ID: '1419190035361697863',        // ใช้ /add, /remove ได้
   MEMBER_ROLE_ID: '1139181683300634664',        // บทบาทสมาชิกแคลน (ใช้ตอน warn ครบ3 / ban / unban)
   ADD_LOG_CHANNEL_ID: '1419188238932901910',    // log ของ /add
   REMOVE_LOG_CHANNEL_ID: '1419188292531912704', // log ของ /remove
-  WARN_LOG_CHANNEL_ID: '1419192910842433547',
+  WARN_LOG_CHANNEL_ID: '1419192910842433547',   // log ของ /warn
   PROMOTE_LOG_CHANNEL_ID: '1419324568757338122',
   DEMOTE_LOG_CHANNEL_ID: '1419324625950605332',
+  BAN_LOG_CHANNEL_ID: '1419193578386751528',    // log ของ /ban
+  UNBAN_LOG_CHANNEL_ID: '1419193635592736838',  // log ของ /unban
+  WELCOME_CHANNEL_ID: '1409540148810485913',    // ส่งข้อความยินดีต้อนรับเมื่อได้รับบทบาทสมาชิก
+  TALK_CHANNEL_ID: '1139185427497111692',       // ห้องพูดคุยสำหรับแนะนำตัว
 }
 
+/* =========================
+ * Utils
+ * ========================= */
 const RANKS = {
   LEADER: 'หัวแคลน',
   DEPUTY: 'รองหัวแคลน',
@@ -56,11 +63,25 @@ function hasActionRole(member) {
   return member.roles?.cache?.has(cfg.ACTION_ROLE_ID)
 }
 
+async function sendLog(channelId, payload) {
+  try {
+    const ch = await client.channels.fetch(channelId)
+    if (!ch || ch.type !== ChannelType.GuildText) return
+    await ch.send(payload)
+  } catch (e) {
+    console.error('sendLog error', e)
+  }
+}
+
+function makeBasicEmbed(title, desc) {
+  return new EmbedBuilder().setTitle(title).setDescription(desc).setTimestamp(new Date())
+}
+
 /* =========================
  * Mongo Schemas
  * ========================= */
 try {
-  await mongoose.connect(process.env.MONGO_URI)
+  await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 10000 })
   console.log('[MongoDB] connected')
 } catch (err) {
   console.error('[MongoDB] connect error', err)
@@ -82,6 +103,7 @@ const WarnSchema = new Schema({
       reason: String,
       ts: { type: Date, default: Date.now },
       moderatorId: String,
+      imageUrl: { type: String, default: null },
     },
   ],
 })
@@ -93,6 +115,7 @@ const BanSchema = new Schema({
   ts: { type: Date, default: Date.now },
   active: { type: Boolean, default: true },
   discordId: { type: String, default: null },
+  imageUrl: { type: String, default: null },
 })
 
 const Member = mongoose.model('Member', MemberSchema)
@@ -113,7 +136,7 @@ const client = new Client({
 })
 
 /* =========================
- * Command Builders
+ * Slash Commands
  * ========================= */
 const commands = [
   new SlashCommandBuilder()
@@ -139,11 +162,21 @@ const commands = [
     .setDescription('ลิสต์สมาชิกตามตำแหน่งพร้อมวันที่เข้า'),
 
   new SlashCommandBuilder()
+    .setName('list-ban')
+    .setDescription('ลิสต์สมาชิกที่ถูกแบน (active=true)'),
+
+  new SlashCommandBuilder()
+    .setName('ban-check')
+    .setDescription('ตรวจสอบว่าไอดีนี้ถูกแบนหรือไม่ และเพราะอะไร')
+    .addStringOption(o => o.setName('game_id').setDescription('ไอดีเกม').setRequired(true)),
+
+  new SlashCommandBuilder()
     .setName('warn')
     .setDescription('เตือนสมาชิก (เก็บประวัติ)')
     .addStringOption(o => o.setName('game_id').setDescription('ไอดีเกม').setRequired(true))
     .addStringOption(o => o.setName('หมายเหตุ').setDescription('เตือนเรื่องอะไร').setRequired(true))
-    .addUserOption(o => o.setName('discord').setDescription('ส่ง DM ถ้าใส่')),
+    .addUserOption(o => o.setName('discord').setDescription('ส่ง DM ถ้าใส่'))
+    .addAttachmentOption(o => o.setName('รูป').setDescription('แนบรูปประกอบ (ตัวเลือกเพิ่มเติม)')),
 
   new SlashCommandBuilder()
     .setName('warnlog')
@@ -161,7 +194,8 @@ const commands = [
     .setDescription('แบนสมาชิกแคลน (ไม่เตะออกจากเซิร์ฟเวอร์)')
     .addStringOption(o => o.setName('game_id').setDescription('ไอดีเกม').setRequired(true))
     .addStringOption(o => o.setName('เหตุผล').setDescription('เหตุผลการแบน').setRequired(true))
-    .addUserOption(o => o.setName('discord').setDescription('เลือกผู้ใช้ Discord (ไม่บังคับ)')),
+    .addUserOption(o => o.setName('discord').setDescription('เลือกผู้ใช้ Discord (ไม่บังคับ)'))
+    .addAttachmentOption(o => o.setName('รูป').setDescription('แนบรูปประกอบ (ตัวเลือกเพิ่มเติม)')),
 
   new SlashCommandBuilder()
     .setName('unban')
@@ -187,11 +221,10 @@ const commands = [
     ))
     .addStringOption(o => o.setName('game_id').setDescription('ไอดีเกม').setRequired(true))
     .addUserOption(o => o.setName('discord').setDescription('ผู้ใช้ Discord (ไม่บังคับ)')),
-]
-  .map(c => c.setDMPermission(false))
+].map(c => c.setDMPermission(false))
 
 /* =========================
- * Register Commands (toggle by env)
+ * Register (toggle)
  * ========================= */
 if (process.env.REGISTER_COMMANDS === 'true') {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN)
@@ -210,51 +243,24 @@ if (process.env.REGISTER_COMMANDS === 'true') {
 }
 
 /* =========================
- * Utility: logging
- * ========================= */
-async function sendLog(channelId, embed) {
-  try {
-    const ch = await client.channels.fetch(channelId)
-    if (ch && ch.type === ChannelType.GuildText) {
-      await ch.send({ embeds: [embed] })
-    }
-  } catch (e) {
-    console.error('sendLog error', e)
-  }
-}
-
-function makeBasicEmbed(title, desc) {
-  return new EmbedBuilder().setTitle(title).setDescription(desc).setTimestamp(new Date())
-}
-
-/* =========================
  * Core Handlers
  * ========================= */
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return
-
   try {
     switch (i.commandName) {
-      case 'add':
-        return handleAdd(i)
-      case 'remove':
-        return handleRemove(i)
-      case 'list':
-        return handleList(i)
-      case 'warn':
-        return handleWarn(i)
-      case 'warnlog':
-        return handleWarnLog(i)
-      case 'unwarn':
-        return handleUnwarn(i)
-      case 'ban':
-        return handleBan(i)
-      case 'unban':
-        return handleUnban(i)
-      case 'promote':
-        return handlePromote(i)
-      case 'demote':
-        return handleDemote(i)
+      case 'add':        return handleAdd(i)
+      case 'remove':     return handleRemove(i)
+      case 'list':       return handleList(i)
+      case 'list-ban':   return handleListBan(i)
+      case 'ban-check':  return handleBanCheck(i)
+      case 'warn':       return handleWarn(i)
+      case 'warnlog':    return handleWarnLog(i)
+      case 'unwarn':     return handleUnwarn(i)
+      case 'ban':        return handleBan(i)
+      case 'unban':      return handleUnban(i)
+      case 'promote':    return handlePromote(i)
+      case 'demote':     return handleDemote(i)
     }
   } catch (err) {
     console.error(err)
@@ -262,8 +268,24 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 })
 
+/* Welcome message: เมื่อได้รับบทบาทสมาชิก */
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  try {
+    const hadRole = oldMember.roles.cache.has(cfg.MEMBER_ROLE_ID)
+    const hasRole = newMember.roles.cache.has(cfg.MEMBER_ROLE_ID)
+    if (!hadRole && hasRole) {
+      const ch = await newMember.guild.channels.fetch(cfg.WELCOME_CHANNEL_ID).catch(() => null)
+      if (ch && ch.type === ChannelType.GuildText) {
+        await ch.send(`ยินดีต้อนรับ <@${newMember.id}>\nคุณสามารถแนะนำตัวได้ที่นี่พูดคุยในห้อง <#${cfg.TALK_CHANNEL_ID}> หากต้องการอะไรให้แท็ก แอดมิน/chok`)
+      }
+    }
+  } catch (e) {
+    console.error('welcome handler error', e)
+  }
+})
+
 /* =========================
- * Prefix Commands (!hello, !ac, !sp)
+ * Prefix Commands (ตัวอย่างสั้น)
  * ========================= */
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot || !msg.guild) return
@@ -272,33 +294,10 @@ client.on(Events.MessageCreate, async (msg) => {
   if (content.startsWith('!hello')) {
     return void msg.reply('สวัสดี')
   }
-
-  if (content.startsWith('!ac')) {
-    const mentionedUser = msg.mentions.users.first()
-    await msg.delete().catch(() => {})
-    const mention = mentionedUser ? `<@${mentionedUser.id}>` : ''
-    const embed = new EmbedBuilder()
-      .setTitle('__**การสมัครแคลน**__')
-      .setDescription(
-        `${mention}\n\nโปรดทราบว่าการสมัครแคลนคุณจะต้องสมัครผ่านในเกมตามไอดีแคลนหากคุณสมัครแล้วแต่ยังไม่ได้บทบาทโปรดคลิกเพิ่มไอดีของคุณด่านล้าง โปรดทราบว่าการอนุมัติในแคลนจะต้องใช้เวลา 1-12 ชั่วโมงในการอนุมัติและการเพิ่มไอดีเกมคุณลงใน discord หากคุณอยู่ในแคลนแล้วเราจะไม่ให้บทบาทโดยทันทีแต่คุณต้องเพิ่มเอง โดยการกดยืนยันอีกครั้งในห้อง <#1155132320144162867>\n\nไอดีแคลน: **YL9KM1**\n\nหากพบปัญหา โปรดติดต่อสนับสนุน <#1139191108547653704>`
-      )
-      .setTimestamp(new Date())
-    return void msg.channel.send({ embeds: [embed] })
-  }
-
-  if (content.startsWith('!sp')) {
-    const mentionedUser = msg.mentions.users.first()
-    await msg.delete().catch(() => {})
-    const mention = mentionedUser ? `<@${mentionedUser.id}>` : ''
-    const embed = new EmbedBuilder()
-      .setDescription(`${mention}\n\nหากพบปัญหาอะไรให้ติดต่อ <#1139191108547653704> หรือสนับสนุนของเรานั่นเอง`)
-      .setTimestamp(new Date())
-    return void msg.channel.send({ embeds: [embed] })
-  }
 })
 
 /* =========================
- * Handlers Implementation
+ * Implementations
  * ========================= */
 async function handleAdd(i) {
   const member = await i.guild.members.fetch(i.user.id)
@@ -339,9 +338,10 @@ async function handleAdd(i) {
     results.push(doc)
   }
 
-  const embed = makeBasicEmbed('เพิ่มสมาชิก', `โดย <@${i.user.id}>\nวันที่: **${joinDateStr}**\nตำแหน่ง: **${pos}**\n\n${results.map(d => `• ${d.gameId}${d.discordId ? ` (<@${d.discordId}>)` : ''}`).join('\n')}${note ? `\n\นหมายเหตุ: ${note}` : ''}`)
-  await sendLog(cfg.ADD_LOG_CHANNEL_ID, embed)
-
+  const embed = makeBasicEmbed('เพิ่มสมาชิก',
+    `โดย <@${i.user.id}>\nวันที่: **${joinDateStr}**\nตำแหน่ง: **${pos}**\n\n${results.map(d => `• ${d.gameId}${d.discordId ? ` (<@${d.discordId}>)` : ''}`).join('\n')}${note ? `\n\nหมายเหตุ: ${note}` : ''}`
+  )
+  await sendLog(cfg.ADD_LOG_CHANNEL_ID, { embeds: [embed] })
   return i.reply({ content: `เพิ่มสมาชิกแล้ว: ${results.length} รายการ (ดู log)`, ephemeral: true })
 }
 
@@ -362,9 +362,10 @@ async function handleRemove(i) {
   const foundIds = new Set(found.map(f => f.gameId))
   await Member.deleteMany({ gameId: { $in: ids } })
 
-  const embed = makeBasicEmbed('ลบสมาชิก', `โดย <@${i.user.id}>\nวันที่: **${whenStr}**\n\n${ids.map(g => `• ${g}${foundIds.has(g) ? '' : ' (ไม่พบเดิม)'} `).join('\n')}${note ? `\n\nหมายเหตุ: ${note}` : ''}`)
-  await sendLog(cfg.REMOVE_LOG_CHANNEL_ID, embed)
-
+  const embed = makeBasicEmbed('ลบสมาชิก',
+    `โดย <@${i.user.id}>\nวันที่: **${whenStr}**\n\n${ids.map(g => `• ${g}${foundIds.has(g) ? '' : ' (ไม่พบเดิม)'} `).join('\n')}${note ? `\n\nหมายเหตุ: ${note}` : ''}`
+  )
+  await sendLog(cfg.REMOVE_LOG_CHANNEL_ID, { embeds: [embed] })
   return i.reply({ content: `ลบแล้ว ${ids.length} รายการ (ดู log)`, ephemeral: true })
 }
 
@@ -385,18 +386,44 @@ async function handleList(i) {
   return i.reply({ embeds: [embed], ephemeral: true })
 }
 
+async function handleListBan(i) {
+  const bans = await Ban.find({ active: true }).sort({ ts: -1 })
+  if (!bans.length) return i.reply({ content: 'ยังไม่มีสมาชิกที่ถูกแบน', ephemeral: true })
+  const lines = bans.map(b => `• ${b.gameId} — ${b.reason || '-'} (${formatDateTH(b.ts)}) โดย <@${b.moderatorId}>`)
+  const embed = new EmbedBuilder().setTitle('รายชื่อผู้ถูกแบน').setDescription(lines.join('\n')).setTimestamp(new Date())
+  return i.reply({ embeds: [embed], ephemeral: true })
+}
+
+async function handleBanCheck(i) {
+  const gameId = i.options.getString('game_id', true)
+  const rec = await Ban.findOne({ gameId })
+  if (!rec || !rec.active) {
+    return i.reply({ content: `ไอดีเกม **${gameId}** ยังไม่ถูกแบน`, ephemeral: true })
+  }
+  const embed = makeBasicEmbed('สถานะแบน',
+    `ไอดีเกม: **${gameId}**\nสถานะ: **แบนอยู่**\nเหตุผล: ${rec.reason || '-'}\nเมื่อ: ${formatDateTH(rec.ts)}\nโดย: <@${rec.moderatorId}>`
+  )
+  if (rec.imageUrl) embed.setImage(rec.imageUrl)
+  return i.reply({ embeds: [embed], ephemeral: true })
+}
+
 async function handleWarn(i) {
   const gameId = i.options.getString('game_id', true)
   const reason = i.options.getString('หมายเหตุ', true)
   const target = i.options.getUser('discord')
+  const img = i.options.getAttachment('รูป') // Attachment from slash option
 
   const doc = (await Warns.findOne({ gameId })) || new Warns({ gameId, entries: [] })
-  doc.entries.push({ reason, ts: new Date(), moderatorId: i.user.id })
+  const imageUrl = img?.url || null
+  doc.entries.push({ reason, ts: new Date(), moderatorId: i.user.id, imageUrl })
   await doc.save()
 
   const count = doc.entries.length
-  const embed = makeBasicEmbed('เตือนสมาชิก', `โดย <@${i.user.id}>\nไอดีเกม: **${gameId}**\nจำนวนเตือน: **${count}/3**\nสาเหตุ: ${reason}`)
-  await sendLog(cfg.WARN_LOG_CHANNEL_ID, embed)
+  const embed = makeBasicEmbed('เตือนสมาชิก',
+    `โดย <@${i.user.id}>\nไอดีเกม: **${gameId}**\nจำนวนเตือน: **${count}/3**\nสาเหตุ: ${reason}`
+  )
+  if (imageUrl) embed.setImage(imageUrl)
+  await sendLog(cfg.WARN_LOG_CHANNEL_ID, { embeds: [embed] })
 
   if (target) {
     try { await target.send(`คุณถูกเตือนในแคลน\nสาเหตุ: ${reason}\nสถานะ: ${count}/3`) } catch {}
@@ -405,7 +432,7 @@ async function handleWarn(i) {
   if (count >= 3) {
     await Ban.updateOne(
       { gameId },
-      { $set: { active: true, reason: 'ครบ 3 เตือน', moderatorId: i.user.id, ts: new Date(), discordId: target?.id || null } },
+      { $set: { active: true, reason: 'ครบ 3 เตือน', moderatorId: i.user.id, ts: new Date(), discordId: target?.id || null, imageUrl: imageUrl || null } },
       { upsert: true }
     )
     try {
@@ -425,7 +452,7 @@ async function handleWarnLog(i) {
   if (!doc || doc.entries.length === 0) {
     return i.reply({ content: `ไอดีเกม: **${gameId}**\n**คนนี้ยังใสสะอาดไม่ทำผิดอะไร**`, ephemeral: true })
   }
-  const lines = doc.entries.map((e, idx) => `${idx + 1}) ${e.reason} — ${formatDateTH(e.ts)} โดย <@${e.moderatorId}>`)
+  const lines = doc.entries.map((e, idx) => `${idx + 1}) ${e.reason} — ${formatDateTH(e.ts)} โดย <@${e.moderatorId}>${e.imageUrl ? ' [รูปแนบ]' : ''}`)
   const embed = makeBasicEmbed('ประวัติการเตือน', `ไอดีเกม: **${gameId}**\nทำผิด **${doc.entries.length}/3** ครั้ง\n\n${lines.join('\n')}`)
   return i.reply({ embeds: [embed], ephemeral: true })
 }
@@ -446,10 +473,12 @@ async function handleBan(i) {
   const gameId = i.options.getString('game_id', true)
   const reason = i.options.getString('เหตุผล', true)
   const user = i.options.getUser('discord')
+  const img = i.options.getAttachment('รูป')
+  const imageUrl = img?.url || null
 
   await Ban.updateOne(
     { gameId },
-    { $set: { active: true, reason, moderatorId: i.user.id, ts: new Date(), discordId: user?.id || null } },
+    { $set: { active: true, reason, moderatorId: i.user.id, ts: new Date(), discordId: user?.id || null, imageUrl } },
     { upsert: true }
   )
   if (user) {
@@ -459,13 +488,20 @@ async function handleBan(i) {
     } catch {}
   }
 
-  return i.reply({ content: `แบนแล้ว: ${gameId}` })
+  const embed = makeBasicEmbed('แบนสมาชิก',
+    `โดย <@${i.user.id}>\nไอดีเกม: **${gameId}**\nเหตุผล: ${reason}${user ? `\nDiscord: <@${user.id}>` : ''}`
+  )
+  if (imageUrl) embed.setImage(imageUrl)
+  await sendLog(cfg.BAN_LOG_CHANNEL_ID, { embeds: [embed] })
+
+  return i.reply({ content: `แบนแล้ว: ${gameId}`, ephemeral: true })
 }
 
 async function handleUnban(i) {
   const gameId = i.options.getString('game_id', true)
   await Ban.updateOne({ gameId }, { $set: { active: false } })
 
+  const reason = i.options.getString('เหตุผล') || ''
   const user = i.options.getUser('discord')
   if (user) {
     try {
@@ -474,7 +510,12 @@ async function handleUnban(i) {
     } catch {}
   }
 
-  return i.reply({ content: `ยกเลิกแบน: ${gameId}` })
+  const embed = makeBasicEmbed('ยกเลิกแบน',
+    `โดย <@${i.user.id}>\nไอดีเกม: **${gameId}**${reason ? `\nเหตุผล: ${reason}` : ''}${user ? `\nDiscord: <@${user.id}>` : ''}`
+  )
+  await sendLog(cfg.UNBAN_LOG_CHANNEL_ID, { embeds: [embed] })
+
+  return i.reply({ content: `ยกเลิกแบน: ${gameId}`, ephemeral: true })
 }
 
 async function handlePromote(i) {
@@ -488,7 +529,7 @@ async function handlePromote(i) {
     { new: true, upsert: true }
   )
   const embed = makeBasicEmbed('เลื่อนตำแหน่ง', `โดย <@${i.user.id}>\nเกมไอดี: **${gid}** → **${pos}**${user ? `\nDiscord: <@${user.id}>` : ''}`)
-  await sendLog(cfg.PROMOTE_LOG_CHANNEL_ID, embed)
+  await sendLog(cfg.PROMOTE_LOG_CHANNEL_ID, { embeds: [embed] })
 
   return i.reply({ content: `เลื่อนตำแหน่งแล้ว: ${gid} → ${pos}`, ephemeral: true })
 }
@@ -504,25 +545,26 @@ async function handleDemote(i) {
     { new: true, upsert: true }
   )
   const embed = makeBasicEmbed('ลดตำแหน่ง', `โดย <@${i.user.id}>\nเกมไอดี: **${gid}** → **${pos}**${user ? `\nDiscord: <@${user.id}>` : ''}`)
-  await sendLog(cfg.DEMOTE_LOG_CHANNEL_ID, embed)
+  await sendLog(cfg.DEMOTE_LOG_CHANNEL_ID, { embeds: [embed] })
 
   return i.reply({ content: `ลดตำแหน่งแล้ว: ${gid} → ${pos}`, ephemeral: true })
 }
 
 /* =========================
- * Login Discord
+ * Login & Health
  * ========================= */
 client.once(Events.ClientReady, () => {
   console.log(`Logged in as ${client.user.tag}`)
 })
 client.login(process.env.DISCORD_TOKEN)
 
-/* =========================
- * Express Health Server (Web Service / Health Check)
- * ========================= */
+/* Express health server */
 const app = express()
 app.get('/', (_req, res) => res.send('Discord Clan Bot is running'))
 app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }))
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => console.log(`Health server listening on ${PORT}`))
 
+/* Avoid early exit logging silence */
+process.on('unhandledRejection', (err) => console.error('UnhandledRejection:', err))
+process.on('uncaughtException', (err) => console.error('UncaughtException:', err))
